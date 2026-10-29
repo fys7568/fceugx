@@ -193,9 +193,13 @@ static uint32_t MapWiiUGamepadToGeneric(uint32_t drc_btns) {
 static float NormalizeWPADAnalog(int pos, int min, int max, int center) {
 	if (min == max) return 0.0f;
 
-	// Handle broken 3rd party controller calibration data
+	// Broken/unusable calibration data (common on 3rd party and clone pads).
+	// Do NOT invent a range here: guessing 0..64/32 turns a pad that simply has
+	// no analog stick into a permanent full-scale deflection, and the emulator
+	// then translates that into a direction key that is always held down.
+	// Treat the axis as non-existent instead.
 	if ((min >= center) || (max <= center)) {
-		min = 0; max = 64; center = 32; // Generic fallback
+		return 0.0f;
 	}
 	int offset = pos - center;
 	if (offset > 0) {
@@ -205,6 +209,52 @@ static float NormalizeWPADAnalog(int pos, int min, int max, int center) {
 	}
 }
 #endif
+
+/****************************************************************************
+ * Analog Axis Plausibility
+ *
+ * A pad that presents itself as a Classic Controller does not necessarily
+ * have analog sticks. Cheap FC/NES replicas (the "China NES controller" that
+ * shows up as a Classic Controller) and NES/SFC-to-Wiimote adapters report a
+ * zeroed calibration block and park the raw position on a rail. Decoding that
+ * yields a full-scale deflection nobody commanded, which the emulator then
+ * turns into a D-pad direction that is held down forever - and the button
+ * mapping screen becomes unusable because a direction is always "pressed".
+ *
+ * An axis is trusted once it has actually been seen to move, or while it is
+ * properly calibrated and sitting away from the rails. Evaluated per axis, so
+ * a pad that only misreports one of them is still usable on the other.
+ *
+ * Lives outside the HW_RVL block because the GameCube ports need it too.
+ ***************************************************************************/
+enum { AXIS_X = 0, AXIS_Y = 1, AXIS_RX = 2, AXIS_RY = 3 };
+
+// 4 channels x 4 axes, plus a second block for the GameCube ports.
+// noise is the per-axis movement, in raw units, that counts as "the player
+// really moved it" - a pad parked on a rail still jitters by a unit or two.
+static bool AxisTrusted(int pos, int min, int max, int center, int slot, int noise) {
+	static int  last[32];
+	static bool known[32];
+	static bool moved[32];
+
+	if (slot < 0 || slot >= 32) return true;
+
+	// A genuine stick changes value as soon as it is touched; latch that and
+	// stop second-guessing it for the rest of the session.
+	if (known[slot]) {
+		int delta = pos - last[slot];
+		if (delta < 0) delta = -delta;
+		if (delta > noise) moved[slot] = true;
+	}
+	known[slot] = true;
+	last[slot] = pos;
+
+	if (moved[slot]) return true;
+
+	bool calOk = (min < center) && (max > center);
+	bool atRail = (pos <= min + 2) || (pos >= max - 2);
+	return calOk && !atRail;
+}
 
 void OgcInputDriver::update() {
 	#ifdef HW_RVL
@@ -228,10 +278,19 @@ void OgcInputDriver::update() {
 			padData.hw_buttons_d[INPUT_HW_GAMECUBE] = MapPADToGeneric(PAD_ButtonsDown(i));
 			padData.hw_buttons_h[INPUT_HW_GAMECUBE] = MapPADToGeneric(PAD_ButtonsHeld(i));
 			padData.hw_buttons_r[INPUT_HW_GAMECUBE] = MapPADToGeneric(PAD_ButtonsUp(i));
-			padData.hw_stickX[INPUT_HW_GAMECUBE] = clampf((float)PAD_StickX(i) / 128.0f, -1.0f, 1.0f);
-			padData.hw_stickY[INPUT_HW_GAMECUBE] = clampf((float)PAD_StickY(i) / 128.0f, -1.0f, 1.0f);
-			padData.hw_substickX[INPUT_HW_GAMECUBE] = clampf((float)PAD_SubStickX(i) / 128.0f, -1.0f, 1.0f);
-			padData.hw_substickY[INPUT_HW_GAMECUBE] = clampf((float)PAD_SubStickY(i) / 128.0f, -1.0f, 1.0f);
+			// Same plausibility rule for the GameCube ports: an FC replica with
+			// a GameCube plug answers the analog poll with a pegged value.
+			int gsx = PAD_StickX(i),  gsy = PAD_StickY(i);
+			int grx = PAD_SubStickX(i), gry = PAD_SubStickY(i);
+
+			if(AxisTrusted(gsx, -128, 128, 0, 16 + i * 4 + AXIS_X, 8))
+				padData.hw_stickX[INPUT_HW_GAMECUBE] = clampf((float)gsx / 128.0f, -1.0f, 1.0f);
+			if(AxisTrusted(gsy, -128, 128, 0, 16 + i * 4 + AXIS_Y, 8))
+				padData.hw_stickY[INPUT_HW_GAMECUBE] = clampf((float)gsy / 128.0f, -1.0f, 1.0f);
+			if(AxisTrusted(grx, -128, 128, 0, 16 + i * 4 + AXIS_RX, 8))
+				padData.hw_substickX[INPUT_HW_GAMECUBE] = clampf((float)grx / 128.0f, -1.0f, 1.0f);
+			if(AxisTrusted(gry, -128, 128, 0, 16 + i * 4 + AXIS_RY, 8))
+				padData.hw_substickY[INPUT_HW_GAMECUBE] = clampf((float)gry / 128.0f, -1.0f, 1.0f);
 		}
 
 		#ifdef HW_RVL
@@ -294,20 +353,52 @@ void OgcInputDriver::update() {
 				bool isWUPC = (wpad->exp.classic.type == 2);
 				int hw = isWUPC ? INPUT_HW_WUPC : INPUT_HW_CLASSIC;
 
+				// Build with -DFCEUGX_PAD_DEBUG to dump what a pad really sends.
+				// Needed when buttons come out shifted: the log tells you which
+				// bit each physical button lands on.
+				#ifdef FCEUGX_PAD_DEBUG
+				{
+					static unsigned dbgTick = 0;
+					if ((dbgTick++ % 60) == 0) {
+						const joystick_t& d = wpad->exp.classic.ljs;
+						printf("[pad%d] exp=%u type=%d btn=%08x ljs pos=%d,%d min=%d,%d max=%d,%d ctr=%d,%d\n",
+							i, (unsigned)exp_type, (int)wpad->exp.classic.type,
+							(unsigned)wpad->btns_h, d.pos.x, d.pos.y,
+							d.min.x, d.min.y, d.max.x, d.max.y, d.center.x, d.center.y);
+					}
+				}
+				#endif
+
 				padData.hw_connected[hw] = true;
 				padData.hw_buttons_d[hw] = MapClassicToGeneric(wpad->btns_d);
 				padData.hw_buttons_h[hw] = MapClassicToGeneric(wpad->btns_h);
 				padData.hw_buttons_r[hw] = MapClassicToGeneric(wpad->btns_u);
 
+				// Only trust an axis once it has proven itself. A clone FC/NES
+				// pad has no sticks at all, and decoding its parked axes holds
+				// a direction down forever.
 				joystick_t* ljs = &wpad->exp.classic.ljs;
 				joystick_t* rjs = &wpad->exp.classic.rjs;
-				padData.hw_stickX[hw] = NormalizeWPADAnalog(ljs->pos.x, ljs->min.x, ljs->max.x, ljs->center.x);
-				padData.hw_stickY[hw] = NormalizeWPADAnalog(ljs->pos.y, ljs->min.y, ljs->max.y, ljs->center.y);
-				padData.hw_substickX[hw] = NormalizeWPADAnalog(rjs->pos.x, rjs->min.x, rjs->max.x, rjs->center.x);
-				padData.hw_substickY[hw] = NormalizeWPADAnalog(rjs->pos.y, rjs->min.y, rjs->max.y, rjs->center.y);
+				const int slot = i * 4;
+
+				bool useLX = isWUPC || AxisTrusted(ljs->pos.x, ljs->min.x, ljs->max.x, ljs->center.x, slot + AXIS_X, 2);
+				bool useLY = isWUPC || AxisTrusted(ljs->pos.y, ljs->min.y, ljs->max.y, ljs->center.y, slot + AXIS_Y, 2);
+				bool useRX = isWUPC || AxisTrusted(rjs->pos.x, rjs->min.x, rjs->max.x, rjs->center.x, slot + AXIS_RX, 2);
+				bool useRY = isWUPC || AxisTrusted(rjs->pos.y, rjs->min.y, rjs->max.y, rjs->center.y, slot + AXIS_RY, 2);
+
+				if (useLX) padData.hw_stickX[hw] = NormalizeWPADAnalog(ljs->pos.x, ljs->min.x, ljs->max.x, ljs->center.x);
+				if (useLY) padData.hw_stickY[hw] = NormalizeWPADAnalog(ljs->pos.y, ljs->min.y, ljs->max.y, ljs->center.y);
+				if (useRX) padData.hw_substickX[hw] = NormalizeWPADAnalog(rjs->pos.x, rjs->min.x, rjs->max.x, rjs->center.x);
+				if (useRY) padData.hw_substickY[hw] = NormalizeWPADAnalog(rjs->pos.y, rjs->min.y, rjs->max.y, rjs->center.y);
 				controller[i]->setSideways(false);
 			}
 			else {
+				// Unrecognised extension (unknown clone / adapter). Its own
+				// buttons are unreadable to us, but the Wiimote it is plugged
+				// into still works - don't swallow that.
+				padData.hw_buttons_d[INPUT_HW_WIIMOTE] = MapWiimoteToGeneric(wpad->btns_d);
+				padData.hw_buttons_h[INPUT_HW_WIIMOTE] = MapWiimoteToGeneric(wpad->btns_h);
+				padData.hw_buttons_r[INPUT_HW_WIIMOTE] = MapWiimoteToGeneric(wpad->btns_u);
 				controller[i]->setSideways(false);
 			}
 		}

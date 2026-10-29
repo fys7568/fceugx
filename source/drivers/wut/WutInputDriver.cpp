@@ -24,6 +24,38 @@ static inline float clampf(float v, float lo, float hi) {
 	return (v < lo) ? lo : (v > hi) ? hi : v;
 }
 
+/****************************************************************************
+ * Analog Axis Plausibility (Wii U)
+ *
+ * Same problem as on the Wii path, different plumbing: a pad that presents
+ * itself as a Classic Controller does not necessarily have analog sticks.
+ * Cheap FC/NES replicas report a zeroed calibration block, and KPAD then hands
+ * us a pegged value for an axis that does not physically exist. The emulator
+ * translates that into a D-pad direction that is held down forever, which
+ * makes the button mapping screen unusable.
+ *
+ * KPAD already normalises to -1..1, so the test is simply: an axis is trusted
+ * once it has moved by a meaningful amount, or while it sits away from the
+ * rails. Per axis, so one bad axis does not disable the other.
+ ***************************************************************************/
+enum { WAXIS_X = 0, WAXIS_Y = 1, WAXIS_RX = 2, WAXIS_RY = 3 };
+
+static bool FloatAxisTrusted(float v, int slot) {
+	static float last[16];
+	static bool  known[16];
+	static bool  moved[16];
+
+	if (slot < 0 || slot >= 16) return true;
+
+	if (known[slot] && std::fabs(v - last[slot]) > 0.05f) moved[slot] = true;
+	known[slot] = true;
+	last[slot] = v;
+
+	if (moved[slot]) return true;
+
+	return (v > -0.95f) && (v < 0.95f);
+}
+
 // Copies the persistent per-profile state (held buttons + analog stick/
 // orientation) for hardware index `hw` from src into dst. Deliberately
 // excludes hw_buttons_d/hw_buttons_r - those are one-frame events
@@ -351,10 +383,17 @@ void WutInputDriver::update() {
 				padData.hw_buttons_h[INPUT_HW_CLASSIC] = MapKPADClassicToGeneric(kpadStatus.classic.hold);
 				padData.hw_buttons_r[INPUT_HW_CLASSIC] = MapKPADClassicToGeneric(kpadStatus.classic.release);
 
-				padData.hw_stickX[INPUT_HW_CLASSIC] = clampf(kpadStatus.classic.leftStick.x, -1.0f, 1.0f);
-				padData.hw_stickY[INPUT_HW_CLASSIC] = clampf(kpadStatus.classic.leftStick.y, -1.0f, 1.0f);
-				padData.hw_substickX[INPUT_HW_CLASSIC] = clampf(kpadStatus.classic.rightStick.x, -1.0f, 1.0f);
-				padData.hw_substickY[INPUT_HW_CLASSIC] = clampf(kpadStatus.classic.rightStick.y, -1.0f, 1.0f);
+				// A clone FC/NES pad has no sticks; KPAD still reports a pegged
+				// axis for them, so only take an axis that has proven itself.
+				const int slot = i * 4;
+				if (FloatAxisTrusted(kpadStatus.classic.leftStick.x,  slot + WAXIS_X))
+					padData.hw_stickX[INPUT_HW_CLASSIC] = clampf(kpadStatus.classic.leftStick.x, -1.0f, 1.0f);
+				if (FloatAxisTrusted(kpadStatus.classic.leftStick.y,  slot + WAXIS_Y))
+					padData.hw_stickY[INPUT_HW_CLASSIC] = clampf(kpadStatus.classic.leftStick.y, -1.0f, 1.0f);
+				if (FloatAxisTrusted(kpadStatus.classic.rightStick.x, slot + WAXIS_RX))
+					padData.hw_substickX[INPUT_HW_CLASSIC] = clampf(kpadStatus.classic.rightStick.x, -1.0f, 1.0f);
+				if (FloatAxisTrusted(kpadStatus.classic.rightStick.y, slot + WAXIS_RY))
+					padData.hw_substickY[INPUT_HW_CLASSIC] = clampf(kpadStatus.classic.rightStick.y, -1.0f, 1.0f);
 
 				controller[i]->setSideways(false);
 			}
