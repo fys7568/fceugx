@@ -575,9 +575,8 @@ int FileSortCallback(const void *f1, const void *f2)
  * IsValidROM
  *
  * Checks if the specified file is a valid ROM
- * For now we will just check the file extension and file size
- * If the file is a zip, we will check the file extension / file size of the
- * first file inside
+ * For now we will just check the file extension. Archives are accepted here and
+ * resolved by the loader, which walks their entries.
  ***************************************************************************/
 static bool IsValidROM()
 {
@@ -593,35 +592,25 @@ static bool IsValidROM()
 				return true;
 			}
 			
-			char * zippedFilename = nullptr;
-
+			// Archives are resolved by the loader, which walks the entries
+			// looking for something it can run. Probing just the first entry
+			// here (by hand-parsing the first local header out of the first
+			// 2 KB) rejected perfectly good archives whose first entry happens
+			// to be a folder, a readme or a cover image.
 			if(strcasecmp(p, ".zip") == 0 && !inSz)
-			{
-				// we need to check the file extension of the first file in the archive
-				zippedFilename = GetFirstZipFilename ();
+				return true;
 
-				if(zippedFilename && strlen(zippedFilename) > 4)
-					p = strrchr(zippedFilename, '.');
-				else
-					p = nullptr;
-			}
-
-			if(p != nullptr)
+			if (
+				strcasecmp(p, ".nes") == 0 ||
+				strcasecmp(p, ".fds") == 0 ||
+				strcasecmp(p, ".nsf") == 0 ||
+				strcasecmp(p, ".unf") == 0 ||
+				strcasecmp(p, ".nez") == 0 ||
+				strcasecmp(p, ".unif") == 0
+			)
 			{
-				if (
-					strcasecmp(p, ".nes") == 0 ||
-					strcasecmp(p, ".fds") == 0 ||
-					strcasecmp(p, ".nsf") == 0 ||
-					strcasecmp(p, ".unf") == 0 ||
-					strcasecmp(p, ".nez") == 0 ||
-					strcasecmp(p, ".unif") == 0
-				)
-				{
-					if(zippedFilename) free(zippedFilename);
-					return true;
-				}
+				return true;
 			}
-			if(zippedFilename) free(zippedFilename);
 		}
 	}
 	ErrorPrompt("Unknown file type!");

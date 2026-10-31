@@ -107,6 +107,87 @@ IsZipFile (char *buffer)
 * the start of the file.
 ******************************************************************************/
 
+/*****************************************************************************
+ * FindRomEntry
+ *
+ * Walks the local file headers looking for the first entry that is actually a
+ * ROM, so a .zip whose first entry happens to be a folder, a readme or a cover
+ * image still loads. Returns the offset of the chosen entry's local header.
+ *
+ * Entries whose size is only recorded in a trailing data descriptor cannot be
+ * skipped over, so the walk stops there (that entry itself can still be used).
+ ***************************************************************************/
+
+static int
+RomEntryName (const char *name)
+{
+	static const char * const exts[] = {
+		".nes", ".fds", ".nsf", ".unf", ".nez", ".unif"
+	};
+
+	size_t len = strlen (name);
+
+	for (size_t i = 0; i < sizeof (exts) / sizeof (exts[0]); i++)
+	{
+		size_t extlen = strlen (exts[i]);
+
+		if (len > extlen && strcasecmp (name + len - extlen, exts[i]) == 0)
+			return 1;
+	}
+
+	return 0;
+}
+
+static int
+FindRomEntry (FILE * fp, uint32_t *headerOffset, uint32_t *entrySize)
+{
+	uint32_t pos = 0;
+
+	/* Bounded: a real archive will give up long before this. */
+	for (int i = 0; i < 64; i++)
+	{
+		PKZIPHEADER h;
+
+		if (fseek (fp, (long) pos, SEEK_SET) != 0)
+			return 0;
+
+		if (fread (&h, 1, sizeof (h), fp) != sizeof (h))
+			return 0;
+
+		if (FLIP32 (h.zipid) != 0x04034b50)
+			return 0;
+
+		uint16_t nameLen = FLIP16 (h.filenameLength);
+		uint16_t extraLen = FLIP16 (h.extraDataLength);
+
+		if (nameLen >= 256)
+			return 0;
+
+		char name[256];
+
+		if (fread (name, 1, nameLen, fp) != nameLen)
+			return 0;
+
+		name[nameLen] = 0;
+
+		if (RomEntryName (name))
+		{
+			*headerOffset = pos;
+			*entrySize = FLIP32 (h.uncompressedSize);
+			return 1;
+		}
+
+		/* Size lives in a data descriptor - we cannot skip past this one. */
+		if (FLIP16 (h.zipflags) & 0x0008)
+			return 0;
+
+		pos += (uint32_t) sizeof (PKZIPHEADER) + nameLen + extraLen +
+			FLIP32 (h.compressedSize);
+	}
+
+	return 0;
+}
+
 size_t
 UnZipBuffer (FILE * fp, unsigned char *outbuffer, size_t buffersize)
 {
@@ -119,6 +200,8 @@ UnZipBuffer (FILE * fp, unsigned char *outbuffer, size_t buffersize)
 	size_t bufferoffset = 0;
 	size_t have = 0;
 	size_t sizeread = 0;
+	uint32_t entryOffset = 0;
+	uint32_t entrySize = 0;
 
 	// input buffer is on the heap - it can be far larger than the worker thread's stack allows
 	std::unique_ptr<char, decltype(&free)> readbufferOwner((char *)memalign(FILE_BUFFER_ALIGN, ZIP_READ_CHUNK), free);
@@ -130,8 +213,17 @@ UnZipBuffer (FILE * fp, unsigned char *outbuffer, size_t buffersize)
 	if(!fp)
 		return 0;
 
+	/* Take the first entry that is actually a ROM, not blindly the first one.
+	 * If there is none the archive is not loadable - say so rather than
+	 * inflating a readme and pretending it is a ROM. */
+	if(!FindRomEntry (fp, &entryOffset, &entrySize))
+	{
+		ErrorPrompt ("No NES ROM found in this archive!");
+		return 0;
+	}
+
 	// Read Zip Header
-	fseek(fp, 0, SEEK_SET);
+	fseek(fp, (long) entryOffset, SEEK_SET);
 	sizeread = fread (readbuffer, 1, ZIP_READ_CHUNK, fp);
 
 	if(sizeread < sizeof (PKZIPHEADER))
@@ -141,6 +233,9 @@ UnZipBuffer (FILE * fp, unsigned char *outbuffer, size_t buffersize)
 	memcpy (&pkzip, readbuffer, sizeof (PKZIPHEADER));
 
 	pkzip.uncompressedSize = FLIP32 (pkzip.uncompressedSize);
+
+	if(entrySize)
+		pkzip.uncompressedSize = entrySize;
 
 	if(pkzip.uncompressedSize > buffersize) {
 		return 0;
