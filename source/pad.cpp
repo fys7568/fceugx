@@ -94,10 +94,12 @@ void ResetControls(int consoleCtrl, int hardwareProfile)
 	if(consoleCtrl == -1 || (consoleCtrl == CTRL_PAD && hardwareProfile == INPUT_HW_CLASSIC))
 	{
 		i=0;
-		btnmap[CTRL_PAD][INPUT_HW_CLASSIC][i++] = INPUT_BTN_Y;
-		btnmap[CTRL_PAD][INPUT_HW_CLASSIC][i++] = INPUT_BTN_B;
-		btnmap[CTRL_PAD][INPUT_HW_CLASSIC][i++] = INPUT_BTN_X;
-		btnmap[CTRL_PAD][INPUT_HW_CLASSIC][i++] = INPUT_BTN_A;
+		// A and B are labelled A and B on the pad, so map them straight across
+		// instead of the SNES-style cross (which put NES A on B).
+		btnmap[CTRL_PAD][INPUT_HW_CLASSIC][i++] = INPUT_BTN_B;  // NES B  <- Classic B
+		btnmap[CTRL_PAD][INPUT_HW_CLASSIC][i++] = INPUT_BTN_A;  // NES A  <- Classic A
+		btnmap[CTRL_PAD][INPUT_HW_CLASSIC][i++] = INPUT_BTN_Y;  // rapid B
+		btnmap[CTRL_PAD][INPUT_HW_CLASSIC][i++] = INPUT_BTN_X;  // rapid A
 		btnmap[CTRL_PAD][INPUT_HW_CLASSIC][i++] = INPUT_BTN_MINUS;
 		btnmap[CTRL_PAD][INPUT_HW_CLASSIC][i++] = INPUT_BTN_PLUS;
 		btnmap[CTRL_PAD][INPUT_HW_CLASSIC][i++] = INPUT_BTN_UP;
@@ -111,10 +113,10 @@ void ResetControls(int consoleCtrl, int hardwareProfile)
 	if(consoleCtrl == -1 || (consoleCtrl == CTRL_PAD && hardwareProfile == INPUT_HW_WUPC))
 	{
 		i=0;
-		btnmap[CTRL_PAD][INPUT_HW_WUPC][i++] = INPUT_BTN_Y;
-		btnmap[CTRL_PAD][INPUT_HW_WUPC][i++] = INPUT_BTN_B;
-		btnmap[CTRL_PAD][INPUT_HW_WUPC][i++] = INPUT_BTN_X;
-		btnmap[CTRL_PAD][INPUT_HW_WUPC][i++] = INPUT_BTN_A;
+		btnmap[CTRL_PAD][INPUT_HW_WUPC][i++] = INPUT_BTN_B;  // NES B  <- Pro B
+		btnmap[CTRL_PAD][INPUT_HW_WUPC][i++] = INPUT_BTN_A;  // NES A  <- Pro A
+		btnmap[CTRL_PAD][INPUT_HW_WUPC][i++] = INPUT_BTN_Y;  // rapid B
+		btnmap[CTRL_PAD][INPUT_HW_WUPC][i++] = INPUT_BTN_X;  // rapid A
 		btnmap[CTRL_PAD][INPUT_HW_WUPC][i++] = INPUT_BTN_MINUS;
 		btnmap[CTRL_PAD][INPUT_HW_WUPC][i++] = INPUT_BTN_PLUS;
 		btnmap[CTRL_PAD][INPUT_HW_WUPC][i++] = INPUT_BTN_UP;
@@ -128,10 +130,10 @@ void ResetControls(int consoleCtrl, int hardwareProfile)
 	if(consoleCtrl == -1 || (consoleCtrl == CTRL_PAD && hardwareProfile == INPUT_HW_DRC))
 	{
 		i=0;
-		btnmap[CTRL_PAD][INPUT_HW_DRC][i++] = INPUT_BTN_Y;
-		btnmap[CTRL_PAD][INPUT_HW_DRC][i++] = INPUT_BTN_B;
-		btnmap[CTRL_PAD][INPUT_HW_DRC][i++] = INPUT_BTN_X;
-		btnmap[CTRL_PAD][INPUT_HW_DRC][i++] = INPUT_BTN_A;
+		btnmap[CTRL_PAD][INPUT_HW_DRC][i++] = INPUT_BTN_B;  // NES B  <- GamePad B
+		btnmap[CTRL_PAD][INPUT_HW_DRC][i++] = INPUT_BTN_A;  // NES A  <- GamePad A
+		btnmap[CTRL_PAD][INPUT_HW_DRC][i++] = INPUT_BTN_Y;  // rapid B
+		btnmap[CTRL_PAD][INPUT_HW_DRC][i++] = INPUT_BTN_X;  // rapid A
 		btnmap[CTRL_PAD][INPUT_HW_DRC][i++] = INPUT_BTN_PLUS;
 		btnmap[CTRL_PAD][INPUT_HW_DRC][i++] = INPUT_BTN_MINUS;
 		btnmap[CTRL_PAD][INPUT_HW_DRC][i++] = INPUT_BTN_UP;
@@ -388,6 +390,17 @@ bool isMenuRequested()
 		bool oneTwoPlus = (pad.buttons_h & INPUT_BTN_1) &&
 						  (pad.buttons_h & INPUT_BTN_2) &&
 						  (pad.buttons_h & INPUT_BTN_PLUS);
+
+		// Reachable on pads that have no Home button at all (NES/FC replicas
+		// only offer a d-pad, A, B, Select and Start), so this one is always
+		// armed regardless of the Menu Toggle setting - four keys at once is
+		// deliberate, not something you hit by accident.
+		bool downStartAB = (pad.buttons_h & INPUT_BTN_DOWN) &&
+						   (pad.buttons_h & INPUT_BTN_PLUS) &&
+						   (pad.buttons_h & INPUT_BTN_A) &&
+						   (pad.buttons_h & INPUT_BTN_B);
+
+		if (downStartAB) return true;
 
 		if (EmuSettings.gamepadMenuToggle == GAMEPAD_MENU_TOGGLE_HOME_RIGHTSTICK)
 		{
